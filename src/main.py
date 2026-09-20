@@ -1,120 +1,135 @@
 #!/usr/bin/env python3
 """
-加密货币资金费率 + OI 监控主程序
-运行方式: python -m src.main
+Critical Funding & OI Monitor - OKX 版本
+监控 BTC-USDT-SWAP / ETH-USDT-SWAP 的资金费率、持仓量、价格
 """
 
-import os
-import sys
-import yaml
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any
 
-# 确保能找到包
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from src.fetchers.binance import fetch_symbol_data
-from src.rules.derivatives import judge_funding_oi, format_alert_message
+from src.okx_client import (
+    get_funding_rate,
+    get_open_interest,
+    get_ticker,
+    get_candles,
+)
 from src.notifier import send_bark
-from src.state import load_state, save_state, is_in_cooldown, mark_alert
+from src.state import load_state, save_state
+
+# 监控交易对
+SYMBOLS = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
+
+# 告警阈值（可按需调整）
+FUNDING_RATE_ALERT = 0.0015      # 单次资金费率绝对值 ≥ 0.15% 告警
+OI_CHANGE_ALERT = 0.08           # 持仓量变化 ≥ 8% 告警（相对上次）
 
 
-def load_config(path: str = "config.yaml") -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def fetch_symbol_data(inst_id: str) -> Dict[str, Any]:
+    """拉取单个交易对全部数据"""
+    result = {"instId": inst_id, "success": False, "error": None}
+
+    try:
+        funding = get_funding_rate(inst_id)
+        oi = get_open_interest(inst_id)
+        ticker = get_ticker(inst_id)
+        candles_1h = get_candles(inst_id, bar="1H", limit=5)
+        candles_4h = get_candles(inst_id, bar="4H", limit=3)
+
+        result.update({
+            "success": True,
+            "fundingRate": float(funding.get("fundingRate", 0)),
+            "nextFundingTime": funding.get("nextFundingTime"),
+            "oi": float(oi.get("oi", 0)),
+            "oiUsd": float(oi.get("oiUsd", 0)) if oi.get("oiUsd") else None,
+            "last": float(ticker.get("last", 0)),
+            "candles_1h": candles_1h,
+            "candles_4h": candles_4h,
+            "ts": int(time.time() * 1000),
+        })
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"获取 {inst_id} 数据失败: {e}")
+
+    return result
 
 
-def calculate_oi_change(current_oi: float, previous_oi: float) -> float:
-    if previous_oi is None or previous_oi <= 0:
-        return 0.0
-    return (current_oi - previous_oi) / previous_oi
+def check_alerts(symbol_data: Dict[str, Any], prev_state: Dict[str, Any]) -> list:
+    """检查是否需要告警"""
+    alerts = []
+    inst_id = symbol_data["instId"]
+
+    if not symbol_data.get("success"):
+        return alerts
+
+    # 1. 资金费率极值
+    fr = symbol_data["fundingRate"]
+    if abs(fr) >= FUNDING_RATE_ALERT:
+        direction = "多头付费" if fr > 0 else "空头付费"
+        alerts.append(
+            f"{inst_id} 资金费率异常: {fr*100:.4f}% ({direction})"
+        )
+
+    # 2. 持仓量大幅变化
+    prev = prev_state.get(inst_id, {})
+    prev_oi = prev.get("oi")
+    curr_oi = symbol_data.get("oi")
+
+    if prev_oi and curr_oi and prev_oi > 0:
+        change = (curr_oi - prev_oi) / prev_oi
+        if abs(change) >= OI_CHANGE_ALERT:
+            direction = "增加" if change > 0 else "减少"
+            alerts.append(
+                f"{inst_id} 持仓量{direction}: {change*100:.2f}% "
+                f"(当前 OI: {curr_oi:,.0f})"
+            )
+
+    return alerts
 
 
-def run_monitor():
-    config = load_config()
+def main():
+    print(f"[{datetime.now(timezone.utc).isoformat()}] 开始监控 {SYMBOLS}")
+
     state = load_state()
-    cooldown = config.get("cooldown_minutes", 60)
-    only_high = config.get("only_high_confidence", True)
-    group = config.get("bark_group", "crypto-funding-oi")
+    all_alerts = []
+    new_state = {}
 
-    symbols = config.get("symbols", ["BTCUSDT", "ETHUSDT"])
-    last_data = state.get("last_data", {})
+    for inst_id in SYMBOLS:
+        data = fetch_symbol_data(inst_id)
 
-    print(f"[{datetime.now(timezone.utc).isoformat()}] 开始监控 {symbols}")
+        if data["success"]:
+            print(
+                f"{inst_id}: "
+                f"价格={data['last']:.2f} | "
+                f"资金费率={data['fundingRate']*100:.4f}% | "
+                f"OI={data['oi']:,.0f}"
+            )
+            alerts = check_alerts(data, state)
+            all_alerts.extend(alerts)
 
-    for symbol in symbols:
-        data = fetch_symbol_data(symbol)
-        if not data:
-            print(f"  {symbol}: 数据获取失败，跳过")
-            continue
-
-        # 计算 OI 变化（与上次运行对比）
-        prev = last_data.get(symbol, {})
-        prev_oi = prev.get("open_interest")
-        oi_change_1h = calculate_oi_change(data["open_interest"], prev_oi)
-        # 简单处理：没有历史 4h 数据时用 1h 近似，实际生产可存更多历史
-        oi_change_4h = oi_change_1h  # 占位，后续可扩展为真正的 4h 对比
-
-        # 更新状态中的最新数据
-        last_data[symbol] = {
-            "open_interest": data["open_interest"],
-            "price": data["price"],
-            "funding_rate": data["funding_rate"],
-            "timestamp": data["timestamp"],
-        }
-
-        judgment = judge_funding_oi(
-            funding_8h=data["funding_rate"],
-            oi_change_1h=oi_change_1h,
-            oi_change_4h=oi_change_4h,
-            price_change_1h=data["price_change_1h"],
-            price_change_4h=data["price_change_4h"],
-            config=config,
-        )
-
-        if not judgment:
-            print(f"  {symbol}: 无触发信号 (funding={data['funding_rate']*100:.4f}%)")
-            continue
-
-        # 置信度过滤
-        if only_high and judgment["confidence"] not in ("高", "中高"):
-            print(f"  {symbol}: 信号置信度不足，跳过")
-            continue
-
-        alert_key = f"{symbol}_{judgment['side']}"
-        if is_in_cooldown(state, alert_key, cooldown):
-            print(f"  {symbol}: 仍在冷却期，跳过推送")
-            continue
-
-        # 生成通知
-        title = f"{judgment['direction']} | {symbol}"
-        body = format_alert_message(
-            symbol=symbol,
-            data=data,
-            judgment=judgment,
-            oi_change_1h=oi_change_1h,
-            oi_change_4h=oi_change_4h,
-        )
-
-        success = send_bark(
-            title=title,
-            body=body,
-            group=group,
-            level="timeSensitive" if judgment["confidence"] == "高" else "active",
-            sound="alarm" if judgment["confidence"] == "高" else None,
-        )
-
-        if success:
-            mark_alert(state, alert_key)
-            print(f"  {symbol}: 已推送 [{judgment['direction']}]")
+            # 只保存必要字段到 state
+            new_state[inst_id] = {
+                "oi": data["oi"],
+                "fundingRate": data["fundingRate"],
+                "last": data["last"],
+                "ts": data["ts"],
+            }
         else:
-            print(f"  {symbol}: 推送失败")
+            print(f"{inst_id}: 数据获取失败, 跳过")
+
+    # 发送告警
+    if all_alerts:
+        title = "【OKX 资金费率/OI 告警】"
+        content = "\n".join(all_alerts)
+        print("触发告警:\n" + content)
+        send_bark(title, content)
+    else:
+        print("无异常告警")
 
     # 保存状态
-    state["last_data"] = last_data
-    save_state(state)
+    save_state(new_state)
     print("监控完成，状态已保存。")
 
 
 if __name__ == "__main__":
-    run_monitor()
+    main()

@@ -1,0 +1,34 @@
+# 监控配置
+symbols:
+  - BTCUSDT
+  - ETHUSDT
+
+# 资金费率阈值（8h 等效，小数形式，0.0005 = 0.05%）
+funding:
+  mild_long: 0.0002
+  overheat_long: 0.0005
+  extreme_long: 0.0008
+  mild_short: -0.0002
+  overheat_short: -0.0004
+  extreme_short: -0.0006
+
+# OI 变化阈值
+oi:
+  change_1h_significant: 0.03
+  change_1h_strong: 0.05
+  change_4h_significant: 0.05
+  change_4h_strong: 0.08
+
+# 价格变化阈值
+price:
+  change_1h: 0.015
+  change_4h: 0.03
+
+# 冷却时间（分钟）
+cooldown_minutes: 60
+
+# Bark 分组
+bark_group: crypto-funding-oi
+
+# 是否只推送高/中高置信度
+only_high_confidence: true

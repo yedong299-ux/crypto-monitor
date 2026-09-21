@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-加密货币资金费率 + OI 监控主程序
+加密货币资金费率 + OI 监控主程序（Bybit 数据源）
 运行方式: python -m src.main
 """
 
@@ -13,7 +13,7 @@ from typing import Dict, Any
 # 确保能找到包
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.fetchers.binance import fetch_symbol_data
+from src.fetchers.bybit import fetch_symbol_data
 from src.rules.derivatives import judge_funding_oi, format_alert_message
 from src.notifier import send_bark
 from src.state import load_state, save_state, is_in_cooldown, mark_alert
@@ -40,7 +40,7 @@ def run_monitor():
     symbols = config.get("symbols", ["BTCUSDT", "ETHUSDT"])
     last_data = state.get("last_data", {})
 
-    print(f"[{datetime.now(timezone.utc).isoformat()}] 开始监控 {symbols}")
+    print(f"[{datetime.now(timezone.utc).isoformat()}] 开始监控 {symbols} (Bybit)")
 
     for symbol in symbols:
         data = fetch_symbol_data(symbol)
@@ -52,8 +52,8 @@ def run_monitor():
         prev = last_data.get(symbol, {})
         prev_oi = prev.get("open_interest")
         oi_change_1h = calculate_oi_change(data["open_interest"], prev_oi)
-        # 简单处理：没有历史 4h 数据时用 1h 近似，实际生产可存更多历史
-        oi_change_4h = oi_change_1h  # 占位，后续可扩展为真正的 4h 对比
+        # 简单处理：没有历史 4h 数据时用 1h 近似
+        oi_change_4h = oi_change_1h
 
         # 更新状态中的最新数据
         last_data[symbol] = {

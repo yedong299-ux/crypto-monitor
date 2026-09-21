@@ -14,18 +14,16 @@
 
 ## 快速部署
 
-1. **Fork 或新建仓库**，把本项目所有文件推上去。
-
-2. **添加 Secrets**  
+1. **添加 Secrets**  
    进入仓库 Settings → Secrets and variables → Actions → New repository secret  
    名称：`BARK_KEY`  
    值：从 Bark App 复制的设备 Key（形如 `xxxxxxxx`）
 
-3. **启用 Actions**  
+2. **启用 Actions**  
    进入 Actions 页面，允许 workflow 运行。  
    也可以手动点击 `Critical Funding & OI Monitor` → Run workflow 测试。
 
-4. **调整阈值**（可选）  
+3. **调整阈值**（可选）  
    编辑 `config.yaml` 中的阈值，使其更激进或更保守。
 
 ## 文件结构
@@ -81,7 +79,8 @@ python -m src.main
 - GitHub Actions 的 cron 是 best-effort，高峰时段可能有延迟。
 - 当前 OI 4h 变化使用简化逻辑（与上次运行对比），后续可扩展为真正的多周期历史存储。
 - 本系统仅做监控提醒，不构成任何投资建议。
-- 请遵守 Binance API 使用规范，避免过于频繁请求。
+- **重要**：Binance Futures API 在部分地区（含美国 IP）可能被限制。如果运行失败提示网络错误，请告知，我可以帮你切换到 Bybit / OKX 或其他可用数据源。
+- 请遵守 API 使用规范，避免过于频繁请求。
 
 ## 后续可扩展方向
 

@@ -1,1 +1,1 @@
-# empty
+# crypto-monitor package
